@@ -402,6 +402,9 @@ const [reqContact, setReqContact] = useState("");
 const [reqDescription, setReqDescription] = useState("");
 const [requests, setRequests] = useState([]);
 const [showReqDropdown, setShowReqDropdown] = useState(false);
+const [userLocationName, setUserLocationName] = useState('');
+const [aiEventSummary, setAiEventSummary] = useState({});
+const [loadingAiSummary, setLoadingAiSummary] = useState(false);
 const [navigationSteps, setNavigationSteps] = useState([]);
 const [currentStepIndex, setCurrentStepIndex] = useState(0);
 const [showNavigationPanel, setShowNavigationPanel] = useState(false);
@@ -913,11 +916,11 @@ useEffect(() => {
 
   useEffect(() => {
     if (currentScreen === 'eventDetail' && selectedEvent) {
-      // Initialize mediaFiles for createdEvents that don't have any
       if (!selectedEvent.mediaFiles) {
         selectedEvent.mediaFiles = [];
       }
       setMediaFiles(selectedEvent.mediaFiles || []);
+      generateAiEventSummary(selectedEvent);
     }
   }, [currentScreen, selectedEvent]);
 
@@ -1327,12 +1330,13 @@ useEffect(() => {
 
   if (!isMobile) {
     getCurrentPositionSafe()
-      .then(pos => {
-        setUserLocation({
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-        });
+      .then(async pos => {
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        setUserLocation({ lat, lng });
         setLocationPermission("granted");
+        const name = await fetchExactAddress(lat, lng);
+        if (name) setUserLocationName(name.split(',').slice(0, 2).join(',').trim());
       })
       .catch(err => {
         console.log("Desktop location denied:", err);
@@ -1344,14 +1348,13 @@ useEffect(() => {
 const requestLocation = async () => {
   try {
     const pos = await getCurrentPositionSafe();
-
-    setUserLocation({
-      lat: pos.coords.latitude,
-      lng: pos.coords.longitude,
-    });
-
+    const lat = pos.coords.latitude;
+    const lng = pos.coords.longitude;
+    setUserLocation({ lat, lng });
     setLocationPermission("granted");
     setShowLocationDialog(false);
+    const name = await fetchExactAddress(lat, lng);
+    if (name) setUserLocationName(name.split(',').slice(0, 2).join(',').trim());
   } catch (err) {
     console.log("Location denied/error:", err);
     setLocationPermission("denied");
@@ -1389,6 +1392,75 @@ const requestMobileLocation = async () => {
     console.log("Mobile geolocation exception:", e);
     alert("Error fetching your location.");
     setLocationPermission("denied");
+  }
+};
+
+const deleteRequest = async (reqId) => {
+  try {
+    await deleteDoc(doc(db, "resourceRequests", reqId));
+    setRequests(prev => prev.filter(r => r.id !== reqId));
+  } catch (err) {
+    console.error("Failed to delete request:", err);
+    alert("Failed to delete request. Please try again.");
+  }
+};
+
+const generateAiEventSummary = async (event) => {
+  const eventId = event?.id;
+  if (!eventId || aiEventSummary[eventId]) return;
+
+  setLoadingAiSummary(true);
+  try {
+    const GEMINI_KEY = process.env.REACT_APP_GEMINI_API_KEY;
+    const firstImage = (event.mediaFiles || []).find(m => m.type === 'image');
+    let summary = '';
+
+    if (firstImage && GEMINI_KEY) {
+      try {
+        const imgRes = await fetch(firstImage.url);
+        const blob = await imgRes.blob();
+        const base64 = await new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result.split(',')[1]);
+          reader.readAsDataURL(blob);
+        });
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{
+                parts: [
+                  { text: 'You are an emergency response assistant. Analyze this emergency incident image and provide a concise 2-3 sentence summary covering: what type of emergency is visible, the apparent severity, and any immediate safety concerns. Be factual and brief.' },
+                  { inline_data: { mime_type: blob.type || 'image/jpeg', data: base64 } }
+                ]
+              }]
+            })
+          }
+        );
+        const data = await res.json();
+        summary = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      } catch (err) {
+        console.warn('Gemini image analysis failed:', err);
+      }
+    }
+
+    if (!summary) {
+      const type = event.type || 'Unknown emergency';
+      const volunteers = event.volunteersNeeded || 0;
+      const supplies = event.suppliesNeeded || '';
+      const location = event.exactAddress || event.locationName || event.location || 'Unknown location';
+      const status = event.emergencyServiceStatus || 'Unknown';
+      summary = `${type} reported at ${location}.${volunteers > 0 ? ` ${volunteers} volunteer${volunteers !== 1 ? 's' : ''} needed.` : ''}${supplies ? ` Required supplies: ${supplies}.` : ''} Emergency services: ${status}.`;
+    }
+
+    setAiEventSummary(prev => ({ ...prev, [eventId]: summary }));
+  } catch (err) {
+    console.error('AI summary failed:', err);
+    setAiEventSummary(prev => ({ ...prev, [event.id]: 'Summary unavailable.' }));
+  } finally {
+    setLoadingAiSummary(false);
   }
 };
 
@@ -1837,9 +1909,17 @@ if (currentScreen === 'home') {
         </div>
         <div className="flex items-center gap-4">
           {locationPermission === 'granted' ? (
-            <MapPin className="w-5 h-5 text-green-600" />
+            <div className="flex items-center gap-1">
+              <MapPin className="w-5 h-5 text-green-600 shrink-0" />
+              {userLocationName && (
+                <span className="text-xs text-gray-700 max-w-[130px] truncate font-medium">{userLocationName}</span>
+              )}
+            </div>
           ) : (
-            <MapPin className="w-5 h-5 text-gray-400" />
+            <button onClick={() => setShowLocationDialog(true)} className="flex items-center gap-1">
+              <MapPin className="w-5 h-5 text-gray-400" />
+              <span className="text-xs text-gray-500">Enable location</span>
+            </button>
           )}
           {isOnline ? (
             <Wifi className="w-5 h-5 text-green-600" />
@@ -1873,8 +1953,72 @@ if (currentScreen === 'home') {
         </div>
       )}
  
+      {/* ACTIVE EMERGENCIES NEARBY */}
+      {createdEvents.filter(e => e.lat && e.lng && calculateDistance(userLocation.lat, userLocation.lng, e.lat, e.lng) <= 5).length > 0 && (
+        <div className="mx-4 mt-4">
+          <h3 className="font-bold text-gray-800 mb-2 flex items-center gap-2">
+            <Siren className="w-5 h-5 text-red-600 animate-pulse" />
+            Active Emergencies Nearby
+          </h3>
+          <div className="space-y-2">
+            {createdEvents
+              .filter(e => e.lat && e.lng && calculateDistance(userLocation.lat, userLocation.lng, e.lat, e.lng) <= 5)
+              .sort((a, b) => calculateDistance(userLocation.lat, userLocation.lng, a.lat, a.lng) - calculateDistance(userLocation.lat, userLocation.lng, b.lat, b.lng))
+              .slice(0, 3)
+              .map(event => {
+                const type = (event.type || '').toLowerCase();
+                const volunteers = event.volunteersNeeded || 0;
+                const isSevere = volunteers >= 5 || type.includes('fire') || type.includes('cardiac') || type.includes('disaster');
+                const color = getEventColor(event.type);
+                const dist = calculateDistance(userLocation.lat, userLocation.lng, event.lat, event.lng).toFixed(1);
+                return (
+                  <div
+                    key={event.id}
+                    onClick={() => { setSelectedEvent(event); setCurrentScreen('eventDetail'); }}
+                    className="rounded-2xl p-3 cursor-pointer"
+                    style={{ backgroundColor: `${color}18`, borderLeft: `4px solid ${color}` }}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="w-2 h-2 rounded-full animate-ping shrink-0" style={{ backgroundColor: color }} />
+                          <span className="font-bold text-sm truncate" style={{ color }}>{event.type}</span>
+                          {isSevere && <span className="text-xs font-bold text-red-600 animate-pulse shrink-0">⚠ URGENT</span>}
+                        </div>
+                        <p className="text-xs text-gray-600 flex items-center gap-1 truncate">
+                          <MapPin className="w-3 h-3 shrink-0" />
+                          {(event.exactAddress || event.location || 'Unknown').split(',')[0]}
+                        </p>
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {volunteers > 0 && (
+                            <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full flex items-center gap-1">
+                              <Users className="w-3 h-3" />{volunteers} needed
+                            </span>
+                          )}
+                          {event.suppliesNeeded && (
+                            <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">🧰 {event.suppliesNeeded}</span>
+                          )}
+                          {event.emergencyServiceStatus === 'Not Arrived' && (
+                            <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full">⚡ Services pending</span>
+                          )}
+                        </div>
+                      </div>
+                      <span className="text-xs text-gray-500 shrink-0 ml-2 mt-1">{dist} km</span>
+                    </div>
+                  </div>
+                );
+              })}
+          </div>
+          {createdEvents.filter(e => e.lat && e.lng && calculateDistance(userLocation.lat, userLocation.lng, e.lat, e.lng) <= 5).length > 3 && (
+            <button onClick={() => setCurrentScreen('createdEvents')} className="w-full text-center text-sm text-blue-600 font-medium mt-2 py-1">
+              View all {createdEvents.filter(e => e.lat && e.lng && calculateDistance(userLocation.lat, userLocation.lng, e.lat, e.lng) <= 5).length} emergencies →
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="mx-4 mt-8 space-y-5">
-    
+
       <button
         onClick={() => setCurrentScreen('createEvent')}
         className="w-full rounded-3xl shadow-lg p-6 flex items-center justify-between hover:shadow-xl transition-all"
@@ -2271,6 +2415,12 @@ if (currentScreen === "requestForm") {
                     <p className="text-xs text-gray-400 mt-1">📍 {r.location.lat.toFixed(4)}, {r.location.lng.toFixed(4)}</p>
                     <p className="text-xs text-gray-400">📞 {r.contact}</p>
                     <p className="text-xs text-gray-400 mt-1">⏱ {new Date(r.timestamp).toLocaleString()}</p>
+                    <button
+                      onClick={() => { if (window.confirm('Mark this request as fulfilled and delete it?')) deleteRequest(r.id); }}
+                      className="mt-2 flex items-center gap-1 text-xs text-red-500 hover:text-red-700 font-medium"
+                    >
+                      <Trash className="w-3 h-3" /> Mark Fulfilled &amp; Delete
+                    </button>
                   </div>
                 ))
               )}
@@ -2308,6 +2458,12 @@ if (currentScreen === "requestList") {
                 <p className="text-xs text-gray-400 mt-1">
                   ⏱ {new Date(r.timestamp).toLocaleString()}
                 </p>
+                <button
+                  onClick={() => { if (window.confirm('Mark this request as fulfilled and delete it?')) deleteRequest(r.id); }}
+                  className="mt-2 flex items-center gap-1 text-xs text-red-500 hover:text-red-700 font-semibold"
+                >
+                  <Trash className="w-3 h-3" /> Mark Fulfilled &amp; Delete
+                </button>
               </div>
             ))}
           </div>
@@ -2626,10 +2782,24 @@ if (currentScreen === 'navigation' && selectedResource) {
                 <div className="bg-white bg-opacity-20 text-white rounded-lg p-3 text-sm">
                   <p className="font-medium mb-1">Description</p>
                   <p className="text-sm text-white/95">{selectedEvent.description}</p>
-                  {/* show exact coordinates too */}
                   <p className="text-xs text-white/75 mt-2">📍 {selectedEvent.lat.toFixed(5)}, {selectedEvent.lng.toFixed(5)}</p>
                 </div>
               )}
+
+              {/* AI INCIDENT SUMMARY */}
+              <div className="bg-black bg-opacity-25 rounded-xl p-3 border border-white border-opacity-20">
+                <div className="flex items-center gap-2 mb-2">
+                  <Brain className="w-4 h-4 text-white shrink-0" />
+                  <p className="text-sm font-semibold text-white">AI Incident Summary</p>
+                </div>
+                {loadingAiSummary && !aiEventSummary[selectedEvent.id] ? (
+                  <p className="text-xs text-white/70 italic">Analyzing incident...</p>
+                ) : aiEventSummary[selectedEvent.id] ? (
+                  <p className="text-sm text-white/95 leading-relaxed">{aiEventSummary[selectedEvent.id]}</p>
+                ) : (
+                  <p className="text-xs text-white/70 italic">No summary available.</p>
+                )}
+              </div>
 
  {/* TABS: Updates | Chat | Media */}
               <div className="mt-3 flex justify-center">
