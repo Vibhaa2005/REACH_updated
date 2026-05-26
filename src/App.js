@@ -1973,13 +1973,14 @@ if (currentScreen === 'home') {
       )}
  
       {/* ALL ACTIVE EVENTS */}
-      {createdEvents.length > 0 && (
-        <div className="mx-4 mt-4">
+      <div className="mx-4 mt-4">
           <div className="flex items-center justify-between mb-3">
             <h3 className="font-bold text-gray-800 flex items-center gap-2">
               <Siren className="w-5 h-5 text-red-600 animate-pulse" />
               Active Events
-              <span className="bg-red-100 text-red-700 text-xs font-bold px-2 py-0.5 rounded-full">{createdEvents.length}</span>
+              {createdEvents.length > 0 && (
+                <span className="bg-red-100 text-red-700 text-xs font-bold px-2 py-0.5 rounded-full">{createdEvents.length}</span>
+              )}
             </h3>
             {createdEvents.length > 4 && (
               <button onClick={() => setCurrentScreen('createdEvents')} className="text-xs text-blue-600 font-medium">
@@ -1987,74 +1988,83 @@ if (currentScreen === 'home') {
               </button>
             )}
           </div>
-          <div className="space-y-2">
-            {[...createdEvents]
-              .sort((a, b) => {
-                const distA = (a.lat && a.lng) ? calculateDistance(userLocation.lat, userLocation.lng, a.lat, a.lng) : 9999;
-                const distB = (b.lat && b.lng) ? calculateDistance(userLocation.lat, userLocation.lng, b.lat, b.lng) : 9999;
-                return distA - distB;
-              })
-              .slice(0, 4)
-              .map(event => {
-                const type = (event.type || '').toLowerCase();
-                const color = getEventColor(event.type);
-                const volunteers = event.volunteersNeeded || 0;
-                const isSevere = volunteers >= 5 || type.includes('fire') || type.includes('cardiac') || type.includes('disaster');
-                const dist = (event.lat && event.lng) ? calculateDistance(userLocation.lat, userLocation.lng, event.lat, event.lng) : null;
-                const isNearby = dist !== null && dist <= 5;
-                return (
-                  <div
-                    key={event.id}
-                    onClick={() => { setSelectedEvent(event); setCurrentScreen('eventDetail'); }}
-                    className="rounded-2xl p-4 cursor-pointer active:scale-95 transition-transform"
-                    style={{ backgroundColor: `${color}15`, borderLeft: `4px solid ${color}` }}
-                  >
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1 flex-wrap">
-                          <span className="w-2.5 h-2.5 rounded-full animate-ping shrink-0" style={{ backgroundColor: color }} />
-                          <span className="font-bold text-sm shrink-0" style={{ color }}>{event.type || 'Unknown'}</span>
-                          {isSevere && <span className="text-xs font-bold text-red-600 animate-pulse shrink-0">⚠ URGENT</span>}
-                          {isNearby && <span className="text-xs font-semibold px-1.5 py-0.5 rounded-full shrink-0" style={{ backgroundColor: `${color}25`, color }}>Nearby</span>}
-                        </div>
-                        <p className="text-xs text-gray-600 flex items-center gap-1 truncate mb-2">
-                          <MapPin className="w-3 h-3 shrink-0" />
-                          {(event.exactAddress || event.location || 'Location unknown').split(',')[0]}
-                        </p>
-                        <div className="flex flex-wrap gap-1">
-                          {volunteers > 0 && (
-                            <span className="text-xs px-2 py-0.5 rounded-full flex items-center gap-1" style={{ backgroundColor: `${color}20`, color }}>
-                              <Users className="w-3 h-3" />{volunteers} needed
-                            </span>
-                          )}
-                          {event.suppliesNeeded && (
-                            <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">🧰 {event.suppliesNeeded}</span>
-                          )}
-                          {event.emergencyServiceStatus === 'Not Arrived' && (
-                            <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full">⚡ Services pending</span>
-                          )}
+          {createdEvents.length === 0 ? (
+            <div className="bg-white rounded-2xl p-5 text-center shadow-sm">
+              <Siren className="w-8 h-8 text-gray-300 mx-auto mb-2" />
+              <p className="text-sm text-gray-400 font-medium">No active events right now</p>
+              <p className="text-xs text-gray-300 mt-1">Events reported nearby will appear here</p>
+            </div>
+          ) : (
+            <>
+              <div className="space-y-2">
+                {[...createdEvents]
+                  .sort((a, b) => {
+                    const distA = (a.lat && a.lng) ? calculateDistance(userLocation.lat, userLocation.lng, a.lat, a.lng) : 9999;
+                    const distB = (b.lat && b.lng) ? calculateDistance(userLocation.lat, userLocation.lng, b.lat, b.lng) : 9999;
+                    return distA - distB;
+                  })
+                  .slice(0, 4)
+                  .map(event => {
+                    const type = (event.type || '').toLowerCase();
+                    const color = getEventColor(event.type);
+                    const volunteers = event.volunteersNeeded || 0;
+                    const isSevere = volunteers >= 5 || type.includes('fire') || type.includes('cardiac') || type.includes('disaster');
+                    const dist = (event.lat && event.lng) ? calculateDistance(userLocation.lat, userLocation.lng, event.lat, event.lng) : null;
+                    const isNearby = dist !== null && dist <= 5;
+                    return (
+                      <div
+                        key={event.id}
+                        onClick={() => { setSelectedEvent(event); setCurrentScreen('eventDetail'); }}
+                        className="rounded-2xl p-4 cursor-pointer active:scale-95 transition-transform"
+                        style={{ backgroundColor: `${color}15`, borderLeft: `4px solid ${color}` }}
+                      >
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1 flex-wrap">
+                              <span className="w-2.5 h-2.5 rounded-full animate-ping shrink-0" style={{ backgroundColor: color }} />
+                              <span className="font-bold text-sm shrink-0" style={{ color }}>{event.type || 'Unknown'}</span>
+                              {isSevere && <span className="text-xs font-bold text-red-600 animate-pulse shrink-0">⚠ URGENT</span>}
+                              {isNearby && <span className="text-xs font-semibold px-1.5 py-0.5 rounded-full shrink-0" style={{ backgroundColor: `${color}25`, color }}>Nearby</span>}
+                            </div>
+                            <p className="text-xs text-gray-600 flex items-center gap-1 truncate mb-2">
+                              <MapPin className="w-3 h-3 shrink-0" />
+                              {(event.exactAddress || event.location || 'Location unknown').split(',')[0]}
+                            </p>
+                            <div className="flex flex-wrap gap-1">
+                              {volunteers > 0 && (
+                                <span className="text-xs px-2 py-0.5 rounded-full flex items-center gap-1" style={{ backgroundColor: `${color}20`, color }}>
+                                  <Users className="w-3 h-3" />{volunteers} needed
+                                </span>
+                              )}
+                              {event.suppliesNeeded && (
+                                <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">🧰 {event.suppliesNeeded}</span>
+                              )}
+                              {event.emergencyServiceStatus === 'Not Arrived' && (
+                                <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full">⚡ Services pending</span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="text-right shrink-0 ml-3">
+                            {dist !== null && <p className="text-xs text-gray-500 font-medium">{dist.toFixed(1)} km</p>}
+                            {event.createdAt?.seconds && (
+                              <p className="text-xs text-gray-400 mt-0.5">
+                                {new Date(event.createdAt.seconds * 1000).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}
+                              </p>
+                            )}
+                          </div>
                         </div>
                       </div>
-                      <div className="text-right shrink-0 ml-3">
-                        {dist !== null && <p className="text-xs text-gray-500 font-medium">{dist.toFixed(1)} km</p>}
-                        {event.createdAt?.seconds && (
-                          <p className="text-xs text-gray-400 mt-0.5">
-                            {new Date(event.createdAt.seconds * 1000).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-          </div>
-          {createdEvents.length > 4 && (
-            <button onClick={() => setCurrentScreen('createdEvents')} className="w-full text-center text-sm text-blue-600 font-medium mt-2 py-1">
-              View all {createdEvents.length} events →
-            </button>
+                    );
+                  })}
+              </div>
+              {createdEvents.length > 4 && (
+                <button onClick={() => setCurrentScreen('createdEvents')} className="w-full text-center text-sm text-blue-600 font-medium mt-2 py-1">
+                  View all {createdEvents.length} events →
+                </button>
+              )}
+            </>
           )}
-        </div>
-      )}
+      </div>
 
       <div className="mx-4 mt-8 space-y-5">
 
