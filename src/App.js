@@ -188,14 +188,24 @@ const enrichStepWithLandmarks = async (step) => {
 };
 const fetchExactAddress = async (lat, lng) => {
   try {
-    if (!GOOGLE_MAPS_API_KEY) return null;
-    
-    const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${GOOGLE_MAPS_API_KEY}`;
-    const res = await fetch(url);
+    if (GOOGLE_MAPS_API_KEY) {
+      const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${GOOGLE_MAPS_API_KEY}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (data.status === 'OK' && data.results && data.results[0]) {
+        return data.results[0].formatted_address;
+      }
+    }
+    // Fallback: free OpenStreetMap Nominatim reverse geocoding
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`,
+      { headers: { 'Accept-Language': 'en' } }
+    );
     const data = await res.json();
-
-    if (data.status === 'OK' && data.results && data.results[0]) {
-      return data.results[0].formatted_address;
+    if (data && data.address) {
+      const a = data.address;
+      return [a.suburb || a.neighbourhood || a.city_district, a.city || a.town || a.village, a.state]
+        .filter(Boolean).slice(0, 2).join(', ');
     }
     return null;
   } catch (err) {
