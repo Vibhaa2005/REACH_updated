@@ -1416,62 +1416,89 @@ const deleteRequest = async (reqId) => {
   }
 };
 
-const generateAiEventSummary = async (event) => {
-  const eventId = event?.id;
-  if (!eventId || aiEventSummary[eventId]) return;
+// Shared helper: builds AI summary from all images on an event
+const _buildAiSummary = async (event) => {
+  const GEMINI_KEY = process.env.REACT_APP_GEMINI_API_KEY;
+  const images = (event.mediaFiles || []).filter(m => m.type === 'image').slice(0, 5);
+  let summary = '';
 
-  setLoadingAiSummary(true);
-  try {
-    const GEMINI_KEY = process.env.REACT_APP_GEMINI_API_KEY;
-    const firstImage = (event.mediaFiles || []).find(m => m.type === 'image');
-    let summary = '';
-
-    if (firstImage && GEMINI_KEY) {
-      try {
-        const imgRes = await fetch(firstImage.url);
+  if (images.length > 0 && GEMINI_KEY) {
+    try {
+      const imageParts = await Promise.all(images.map(async (img) => {
+        const imgRes = await fetch(img.url);
         const blob = await imgRes.blob();
         const base64 = await new Promise((resolve) => {
           const reader = new FileReader();
           reader.onloadend = () => resolve(reader.result.split(',')[1]);
           reader.readAsDataURL(blob);
         });
-        const res = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{
-                parts: [
-                  { text: 'You are an emergency response assistant. Analyze this emergency incident image and provide a concise 2-3 sentence summary covering: what type of emergency is visible, the apparent severity, and any immediate safety concerns. Be factual and brief.' },
-                  { inline_data: { mime_type: blob.type || 'image/jpeg', data: base64 } }
-                ]
-              }]
-            })
-          }
-        );
-        const data = await res.json();
-        summary = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      } catch (err) {
-        console.warn('Gemini image analysis failed:', err);
-      }
-    }
+        return { inline_data: { mime_type: blob.type || 'image/jpeg', data: base64 } };
+      }));
 
-    if (!summary) {
-      const type = event.type || 'Unknown emergency';
-      const volunteers = event.volunteersNeeded || 0;
-      const supplies = event.suppliesNeeded || '';
-      const location = event.exactAddress || event.locationName || event.location || 'Unknown location';
-      const status = event.emergencyServiceStatus || 'Unknown';
-      summary = `${type} reported at ${location}.${volunteers > 0 ? ` ${volunteers} volunteer${volunteers !== 1 ? 's' : ''} needed.` : ''}${supplies ? ` Required supplies: ${supplies}.` : ''} Emergency services: ${status}.`;
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { text: `You are an emergency response assistant. Analyze ${images.length > 1 ? 'these ' + images.length + ' images' : 'this image'} from a ${event.type || 'emergency'} incident and provide a concise 2-3 sentence summary covering: what is visible, the apparent severity, and any immediate safety concerns. Be factual and brief.` },
+                ...imageParts
+              ]
+            }]
+          })
+        }
+      );
+      const data = await res.json();
+      summary = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    } catch (err) {
+      console.warn('Gemini image analysis failed:', err);
     }
+  }
 
+  if (!summary) {
+    const type = event.type || 'Unknown emergency';
+    const volunteers = event.volunteersNeeded || 0;
+    const supplies = event.suppliesNeeded || '';
+    const location = event.exactAddress || event.locationName || event.location || 'Unknown location';
+    const status = event.emergencyServiceStatus || 'Unknown';
+    summary = `${type} reported at ${location}.${volunteers > 0 ? ` ${volunteers} volunteer${volunteers !== 1 ? 's' : ''} needed.` : ''}${supplies ? ` Required supplies: ${supplies}.` : ''} Emergency services: ${status}.`;
+  }
+  return summary;
+};
+
+const generateAiEventSummary = async (event) => {
+  const eventId = event?.id;
+  if (!eventId) return;
+  // If already saved to Firestore, load from there into state
+  if (event.aiSummary) {
+    setAiEventSummary(prev => ({ ...prev, [eventId]: event.aiSummary }));
+    return;
+  }
+  if (aiEventSummary[eventId]) return;
+  setLoadingAiSummary(true);
+  try {
+    const summary = await _buildAiSummary(event);
     setAiEventSummary(prev => ({ ...prev, [eventId]: summary }));
   } catch (err) {
     console.error('AI summary failed:', err);
-    setAiEventSummary(prev => ({ ...prev, [event.id]: 'Summary unavailable.' }));
+    setAiEventSummary(prev => ({ ...prev, [eventId]: 'Summary unavailable.' }));
   } finally {
     setLoadingAiSummary(false);
+  }
+};
+
+// Generates summary from all images and saves it to Firestore on the event doc
+const generateAndSaveAiSummary = async (eventId, mediaFiles, eventData) => {
+  try {
+    const summary = await _buildAiSummary({ ...eventData, id: eventId, mediaFiles });
+    await updateDoc(doc(db, 'createdEvents', eventId), { aiSummary: summary });
+    setAiEventSummary(prev => ({ ...prev, [eventId]: summary }));
+    setCreatedEvents(prev => prev.map(ev => ev.id === eventId ? { ...ev, aiSummary: summary } : ev));
+    if (selectedEvent?.id === eventId) setSelectedEvent(prev => ({ ...prev, aiSummary: summary }));
+  } catch (err) {
+    console.error('generateAndSaveAiSummary failed:', err);
   }
 };
 
@@ -2837,16 +2864,26 @@ if (currentScreen === 'navigation' && selectedResource) {
 
               {/* AI INCIDENT SUMMARY */}
               <div className="bg-black bg-opacity-25 rounded-xl p-3 border border-white border-opacity-20">
-                <div className="flex items-center gap-2 mb-2">
+                <div className="flex items-center gap-2 mb-2 flex-wrap">
                   <Brain className="w-4 h-4 text-white shrink-0" />
-                  <p className="text-sm font-semibold text-white">AI Incident Summary</p>
+                  <p className="text-sm font-semibold text-white">AI-generated summary from media</p>
+                  {(selectedEvent.aiSummary || aiEventSummary[selectedEvent.id]) &&
+                    (selectedEvent.mediaFiles || []).some(m => m.type === 'image') && (
+                    <span className="text-xs bg-white bg-opacity-20 text-white px-2 py-0.5 rounded-full">
+                      {(selectedEvent.mediaFiles || []).filter(m => m.type === 'image').length} image{(selectedEvent.mediaFiles || []).filter(m => m.type === 'image').length !== 1 ? 's' : ''} analyzed
+                    </span>
+                  )}
                 </div>
-                {loadingAiSummary && !aiEventSummary[selectedEvent.id] ? (
-                  <p className="text-xs text-white/70 italic">Analyzing incident...</p>
-                ) : aiEventSummary[selectedEvent.id] ? (
-                  <p className="text-sm text-white/95 leading-relaxed">{aiEventSummary[selectedEvent.id]}</p>
+                {loadingAiSummary && !aiEventSummary[selectedEvent.id] && !selectedEvent.aiSummary ? (
+                  <p className="text-xs text-white/70 italic">Analyzing uploaded media...</p>
+                ) : (selectedEvent.aiSummary || aiEventSummary[selectedEvent.id]) ? (
+                  <p className="text-sm text-white/95 leading-relaxed">{selectedEvent.aiSummary || aiEventSummary[selectedEvent.id]}</p>
                 ) : (
-                  <p className="text-xs text-white/70 italic">No summary available.</p>
+                  <p className="text-xs text-white/70 italic">
+                    {(selectedEvent.mediaFiles || []).some(m => m.type === 'image')
+                      ? 'Generating summary...'
+                      : 'Upload images to generate an AI summary.'}
+                  </p>
                 )}
               </div>
 
@@ -3657,6 +3694,11 @@ if (currentScreen === 'navigation' && selectedResource) {
               // Save to Firestore
               const docRef = await addDoc(collection(db, "createdEvents"), newEventData);
               const eventWithId = { ...newEventData, id: docRef.id };
+
+              // Generate AI summary from uploaded images and save to Firestore
+              if (uploadedMedia.some(m => m.type === 'image')) {
+                generateAndSaveAiSummary(docRef.id, uploadedMedia, newEventData);
+              }
 
               // ADD THIS: Track activity locally
               const newActivity = {
