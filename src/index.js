@@ -11,7 +11,7 @@ class ErrorBoundary extends React.Component {
     if (this.state.error) {
       return (
         <div style={{ padding: 32, fontFamily: 'monospace', background: '#1a1a1a', color: '#ff6b6b', minHeight: '100vh' }}>
-          <h2>App crashed — error details:</h2>
+          <h2>React render crash:</h2>
           <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{String(this.state.error)}</pre>
           <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#aaa', marginTop: 16 }}>{this.state.error?.stack}</pre>
         </div>
@@ -28,7 +28,4 @@ root.render(
   </ErrorBoundary>
 );
 
-// If you want to start measuring performance in your app, pass a function
-// to log results (for example: reportWebVitals(console.log))
-// or send to an analytics endpoint. Learn more: https://bit.ly/CRA-vitals
 reportWebVitals();

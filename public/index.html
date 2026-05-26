@@ -26,6 +26,20 @@
       Learn how to configure a non-root public URL by running `npm run build`.
     -->
     <title>React App</title>
+    <script>
+      window.onerror = function(msg, src, line, col, err) {
+        document.getElementById('root').innerHTML =
+          '<div style="padding:32px;font-family:monospace;background:#1a1a1a;color:#ff6b6b;min-height:100vh">' +
+          '<h2>JS crash before React mounted:</h2>' +
+          '<pre style="white-space:pre-wrap;word-break:break-word">' + msg + '\nFile: ' + src + '\nLine: ' + line + '\n\n' + (err && err.stack ? err.stack : '') + '</pre></div>';
+      };
+      window.addEventListener('unhandledrejection', function(e) {
+        document.getElementById('root').innerHTML =
+          '<div style="padding:32px;font-family:monospace;background:#222;color:#ff9900;min-height:100vh">' +
+          '<h2>Unhandled Promise Rejection:</h2>' +
+          '<pre style="white-space:pre-wrap;word-break:break-word">' + String(e.reason) + '\n\n' + (e.reason && e.reason.stack ? e.reason.stack : '') + '</pre></div>';
+      });
+    </script>
   </head>
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>
