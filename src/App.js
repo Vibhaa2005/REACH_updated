@@ -1416,56 +1416,81 @@ const deleteRequest = async (reqId) => {
   }
 };
 
-// Shared helper: builds AI summary from all images on an event
-const _buildAiSummary = async (event) => {
-  const GEMINI_KEY = process.env.REACT_APP_GEMINI_API_KEY;
-  const images = (event.mediaFiles || []).filter(m => m.type === 'image').slice(0, 5);
-  let summary = '';
+// Converts a File object or fetched blob to base64 string
+const _fileToBase64 = (fileOrBlob) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onloadend = () => resolve(reader.result.split(',')[1]);
+  reader.onerror = reject;
+  reader.readAsDataURL(fileOrBlob);
+});
 
-  if (images.length > 0 && GEMINI_KEY) {
-    try {
-      const imageParts = await Promise.all(images.map(async (img) => {
-        const imgRes = await fetch(img.url);
-        const blob = await imgRes.blob();
-        const base64 = await new Promise((resolve) => {
-          const reader = new FileReader();
-          reader.onloadend = () => resolve(reader.result.split(',')[1]);
-          reader.readAsDataURL(blob);
-        });
+// Shared helper: builds AI summary from images
+// rawFiles: array of File objects (from form, avoids CORS) — preferred
+// fallbackMediaFiles: array of {url, type} objects used for existing events
+const _buildAiSummary = async (event, rawFiles = []) => {
+  const GEMINI_KEY = process.env.REACT_APP_GEMINI_API_KEY;
+  if (!GEMINI_KEY) return _textFallbackSummary(event);
+
+  // Prefer raw File objects (no CORS), fall back to URL fetch
+  const imageFiles = rawFiles.filter(f => f.type && f.type.startsWith('image/')).slice(0, 5);
+  const urlImages = imageFiles.length === 0
+    ? (event.mediaFiles || []).filter(m => m.type === 'image').slice(0, 5)
+    : [];
+
+  const totalImages = imageFiles.length || urlImages.length;
+  if (totalImages === 0) return _textFallbackSummary(event);
+
+  try {
+    let imageParts = [];
+
+    if (imageFiles.length > 0) {
+      imageParts = await Promise.all(imageFiles.map(async (file) => {
+        const base64 = await _fileToBase64(file);
+        return { inline_data: { mime_type: file.type, data: base64 } };
+      }));
+    } else {
+      imageParts = await Promise.all(urlImages.map(async (img) => {
+        const res = await fetch(img.url);
+        const blob = await res.blob();
+        const base64 = await _fileToBase64(blob);
         return { inline_data: { mime_type: blob.type || 'image/jpeg', data: base64 } };
       }));
-
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{
-              parts: [
-                { text: `You are an emergency response assistant. Analyze ${images.length > 1 ? 'these ' + images.length + ' images' : 'this image'} from a ${event.type || 'emergency'} incident and provide a concise 2-3 sentence summary covering: what is visible, the apparent severity, and any immediate safety concerns. Be factual and brief.` },
-                ...imageParts
-              ]
-            }]
-          })
-        }
-      );
-      const data = await res.json();
-      summary = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    } catch (err) {
-      console.warn('Gemini image analysis failed:', err);
     }
+
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              {
+                text: `You are an emergency response assistant. Analyze ${totalImages > 1 ? 'these ' + totalImages + ' images' : 'this image'} from a reported "${event.type || 'emergency'}" incident. Describe in 3-4 sentences: what is visually happening, the severity and scale of the situation, visible injuries or damage, and any immediate dangers or hazards present. Be specific and factual — do not be vague.`
+              },
+              ...imageParts
+            ]
+          }]
+        })
+      }
+    );
+    const data = await res.json();
+    const summary = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    if (summary) return summary;
+  } catch (err) {
+    console.warn('Gemini image analysis failed:', err);
   }
 
-  if (!summary) {
-    const type = event.type || 'Unknown emergency';
-    const volunteers = event.volunteersNeeded || 0;
-    const supplies = event.suppliesNeeded || '';
-    const location = event.exactAddress || event.locationName || event.location || 'Unknown location';
-    const status = event.emergencyServiceStatus || 'Unknown';
-    summary = `${type} reported at ${location}.${volunteers > 0 ? ` ${volunteers} volunteer${volunteers !== 1 ? 's' : ''} needed.` : ''}${supplies ? ` Required supplies: ${supplies}.` : ''} Emergency services: ${status}.`;
-  }
-  return summary;
+  return _textFallbackSummary(event);
+};
+
+const _textFallbackSummary = (event) => {
+  const type = event.type || 'Unknown emergency';
+  const volunteers = event.volunteersNeeded || 0;
+  const supplies = event.suppliesNeeded || '';
+  const location = event.exactAddress || event.locationName || event.location || 'Unknown location';
+  const status = event.emergencyServiceStatus || 'Unknown';
+  return `${type} reported at ${location}.${volunteers > 0 ? ` ${volunteers} volunteer${volunteers !== 1 ? 's' : ''} needed.` : ''}${supplies ? ` Required supplies: ${supplies}.` : ''} Emergency services: ${status}.`;
 };
 
 const generateAiEventSummary = async (event) => {
@@ -1490,9 +1515,10 @@ const generateAiEventSummary = async (event) => {
 };
 
 // Generates summary from all images and saves it to Firestore on the event doc
-const generateAndSaveAiSummary = async (eventId, mediaFiles, eventData) => {
+// rawFiles: original File objects from the form (avoids CORS on Firebase Storage URLs)
+const generateAndSaveAiSummary = async (eventId, mediaFiles, eventData, rawFiles = []) => {
   try {
-    const summary = await _buildAiSummary({ ...eventData, id: eventId, mediaFiles });
+    const summary = await _buildAiSummary({ ...eventData, id: eventId, mediaFiles }, rawFiles);
     await updateDoc(doc(db, 'createdEvents', eventId), { aiSummary: summary });
     setAiEventSummary(prev => ({ ...prev, [eventId]: summary }));
     setCreatedEvents(prev => prev.map(ev => ev.id === eventId ? { ...ev, aiSummary: summary } : ev));
@@ -3696,8 +3722,12 @@ if (currentScreen === 'navigation' && selectedResource) {
               const eventWithId = { ...newEventData, id: docRef.id };
 
               // Generate AI summary from uploaded images and save to Firestore
-              if (uploadedMedia.some(m => m.type === 'image')) {
-                generateAndSaveAiSummary(docRef.id, uploadedMedia, newEventData);
+              // Pass raw File objects to avoid CORS when fetching Firebase Storage URLs
+              const rawImageFiles = newEventForm.mediaFiles
+                .filter(m => m.type === 'image' && m.file)
+                .map(m => m.file);
+              if (rawImageFiles.length > 0) {
+                generateAndSaveAiSummary(docRef.id, uploadedMedia, newEventData, rawImageFiles);
               }
 
               // ADD THIS: Track activity locally
