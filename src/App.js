@@ -1972,45 +1972,58 @@ if (currentScreen === 'home') {
         </div>
       )}
  
-      {/* ACTIVE EMERGENCIES NEARBY */}
-      {createdEvents.filter(e => e.lat && e.lng && calculateDistance(userLocation.lat, userLocation.lng, e.lat, e.lng) <= 5).length > 0 && (
+      {/* ALL ACTIVE EVENTS */}
+      {createdEvents.length > 0 && (
         <div className="mx-4 mt-4">
-          <h3 className="font-bold text-gray-800 mb-2 flex items-center gap-2">
-            <Siren className="w-5 h-5 text-red-600 animate-pulse" />
-            Active Emergencies Nearby
-          </h3>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-bold text-gray-800 flex items-center gap-2">
+              <Siren className="w-5 h-5 text-red-600 animate-pulse" />
+              Active Events
+              <span className="bg-red-100 text-red-700 text-xs font-bold px-2 py-0.5 rounded-full">{createdEvents.length}</span>
+            </h3>
+            {createdEvents.length > 4 && (
+              <button onClick={() => setCurrentScreen('createdEvents')} className="text-xs text-blue-600 font-medium">
+                View all →
+              </button>
+            )}
+          </div>
           <div className="space-y-2">
-            {createdEvents
-              .filter(e => e.lat && e.lng && calculateDistance(userLocation.lat, userLocation.lng, e.lat, e.lng) <= 5)
-              .sort((a, b) => calculateDistance(userLocation.lat, userLocation.lng, a.lat, a.lng) - calculateDistance(userLocation.lat, userLocation.lng, b.lat, b.lng))
-              .slice(0, 3)
+            {[...createdEvents]
+              .sort((a, b) => {
+                const distA = (a.lat && a.lng) ? calculateDistance(userLocation.lat, userLocation.lng, a.lat, a.lng) : 9999;
+                const distB = (b.lat && b.lng) ? calculateDistance(userLocation.lat, userLocation.lng, b.lat, b.lng) : 9999;
+                return distA - distB;
+              })
+              .slice(0, 4)
               .map(event => {
                 const type = (event.type || '').toLowerCase();
+                const color = getEventColor(event.type);
                 const volunteers = event.volunteersNeeded || 0;
                 const isSevere = volunteers >= 5 || type.includes('fire') || type.includes('cardiac') || type.includes('disaster');
-                const color = getEventColor(event.type);
-                const dist = calculateDistance(userLocation.lat, userLocation.lng, event.lat, event.lng).toFixed(1);
+                const dist = (event.lat && event.lng) ? calculateDistance(userLocation.lat, userLocation.lng, event.lat, event.lng) : null;
+                const isNearby = dist !== null && dist <= 5;
                 return (
                   <div
                     key={event.id}
                     onClick={() => { setSelectedEvent(event); setCurrentScreen('eventDetail'); }}
-                    className="rounded-2xl p-3 cursor-pointer"
-                    style={{ backgroundColor: `${color}18`, borderLeft: `4px solid ${color}` }}
+                    className="rounded-2xl p-4 cursor-pointer active:scale-95 transition-transform"
+                    style={{ backgroundColor: `${color}15`, borderLeft: `4px solid ${color}` }}
                   >
                     <div className="flex items-start justify-between">
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="w-2 h-2 rounded-full animate-ping shrink-0" style={{ backgroundColor: color }} />
-                          <span className="font-bold text-sm truncate" style={{ color }}>{event.type}</span>
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
+                          <span className="w-2.5 h-2.5 rounded-full animate-ping shrink-0" style={{ backgroundColor: color }} />
+                          <span className="font-bold text-sm shrink-0" style={{ color }}>{event.type || 'Unknown'}</span>
                           {isSevere && <span className="text-xs font-bold text-red-600 animate-pulse shrink-0">⚠ URGENT</span>}
+                          {isNearby && <span className="text-xs font-semibold px-1.5 py-0.5 rounded-full shrink-0" style={{ backgroundColor: `${color}25`, color }}>Nearby</span>}
                         </div>
-                        <p className="text-xs text-gray-600 flex items-center gap-1 truncate">
+                        <p className="text-xs text-gray-600 flex items-center gap-1 truncate mb-2">
                           <MapPin className="w-3 h-3 shrink-0" />
-                          {(event.exactAddress || event.location || 'Unknown').split(',')[0]}
+                          {(event.exactAddress || event.location || 'Location unknown').split(',')[0]}
                         </p>
-                        <div className="flex flex-wrap gap-1 mt-1">
+                        <div className="flex flex-wrap gap-1">
                           {volunteers > 0 && (
-                            <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full flex items-center gap-1">
+                            <span className="text-xs px-2 py-0.5 rounded-full flex items-center gap-1" style={{ backgroundColor: `${color}20`, color }}>
                               <Users className="w-3 h-3" />{volunteers} needed
                             </span>
                           )}
@@ -2022,15 +2035,22 @@ if (currentScreen === 'home') {
                           )}
                         </div>
                       </div>
-                      <span className="text-xs text-gray-500 shrink-0 ml-2 mt-1">{dist} km</span>
+                      <div className="text-right shrink-0 ml-3">
+                        {dist !== null && <p className="text-xs text-gray-500 font-medium">{dist.toFixed(1)} km</p>}
+                        {event.createdAt?.seconds && (
+                          <p className="text-xs text-gray-400 mt-0.5">
+                            {new Date(event.createdAt.seconds * 1000).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}
+                          </p>
+                        )}
+                      </div>
                     </div>
                   </div>
                 );
               })}
           </div>
-          {createdEvents.filter(e => e.lat && e.lng && calculateDistance(userLocation.lat, userLocation.lng, e.lat, e.lng) <= 5).length > 3 && (
+          {createdEvents.length > 4 && (
             <button onClick={() => setCurrentScreen('createdEvents')} className="w-full text-center text-sm text-blue-600 font-medium mt-2 py-1">
-              View all {createdEvents.filter(e => e.lat && e.lng && calculateDistance(userLocation.lat, userLocation.lng, e.lat, e.lng) <= 5).length} emergencies →
+              View all {createdEvents.length} events →
             </button>
           )}
         </div>
