@@ -1431,7 +1431,6 @@ const _buildAiSummary = async (event, rawFiles = []) => {
   const GEMINI_KEY = process.env.REACT_APP_GEMINI_API_KEY;
   if (!GEMINI_KEY) return _textFallbackSummary(event);
 
-  // Prefer raw File objects (no CORS), fall back to URL fetch
   const imageFiles = rawFiles.filter(f => f.type && f.type.startsWith('image/')).slice(0, 5);
   const urlImages = imageFiles.length === 0
     ? (event.mediaFiles || []).filter(m => m.type === 'image').slice(0, 5)
@@ -1442,7 +1441,6 @@ const _buildAiSummary = async (event, rawFiles = []) => {
 
   try {
     let imageParts = [];
-
     if (imageFiles.length > 0) {
       imageParts = await Promise.all(imageFiles.map(async (file) => {
         const base64 = await _fileToBase64(file);
@@ -1475,8 +1473,8 @@ const _buildAiSummary = async (event, rawFiles = []) => {
       }
     );
     const data = await res.json();
-    const summary = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    if (summary) return summary;
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    if (text) return { summary: text, fromImages: true };
   } catch (err) {
     console.warn('Gemini image analysis failed:', err);
   }
@@ -1490,7 +1488,10 @@ const _textFallbackSummary = (event) => {
   const supplies = event.suppliesNeeded || '';
   const location = event.exactAddress || event.locationName || event.location || 'Unknown location';
   const status = event.emergencyServiceStatus || 'Unknown';
-  return `${type} reported at ${location}.${volunteers > 0 ? ` ${volunteers} volunteer${volunteers !== 1 ? 's' : ''} needed.` : ''}${supplies ? ` Required supplies: ${supplies}.` : ''} Emergency services: ${status}.`;
+  return {
+    summary: `${type} reported at ${location}.${volunteers > 0 ? ` ${volunteers} volunteer${volunteers !== 1 ? 's' : ''} needed.` : ''}${supplies ? ` Required supplies: ${supplies}.` : ''} Emergency services: ${status}.`,
+    fromImages: false
+  };
 };
 
 const generateAiEventSummary = async (event) => {
@@ -1504,7 +1505,7 @@ const generateAiEventSummary = async (event) => {
   if (aiEventSummary[eventId]) return;
   setLoadingAiSummary(true);
   try {
-    const summary = await _buildAiSummary(event);
+    const { summary } = await _buildAiSummary(event);
     setAiEventSummary(prev => ({ ...prev, [eventId]: summary }));
   } catch (err) {
     console.error('AI summary failed:', err);
@@ -1518,11 +1519,11 @@ const generateAiEventSummary = async (event) => {
 // rawFiles: original File objects from the form (avoids CORS on Firebase Storage URLs)
 const generateAndSaveAiSummary = async (eventId, mediaFiles, eventData, rawFiles = []) => {
   try {
-    const summary = await _buildAiSummary({ ...eventData, id: eventId, mediaFiles }, rawFiles);
-    await updateDoc(doc(db, 'createdEvents', eventId), { aiSummary: summary });
+    const { summary, fromImages } = await _buildAiSummary({ ...eventData, id: eventId, mediaFiles }, rawFiles);
+    await updateDoc(doc(db, 'createdEvents', eventId), { aiSummary: summary, aiSummaryFromImages: fromImages });
     setAiEventSummary(prev => ({ ...prev, [eventId]: summary }));
-    setCreatedEvents(prev => prev.map(ev => ev.id === eventId ? { ...ev, aiSummary: summary } : ev));
-    if (selectedEvent?.id === eventId) setSelectedEvent(prev => ({ ...prev, aiSummary: summary }));
+    setCreatedEvents(prev => prev.map(ev => ev.id === eventId ? { ...ev, aiSummary: summary, aiSummaryFromImages: fromImages } : ev));
+    if (selectedEvent?.id === eventId) setSelectedEvent(prev => ({ ...prev, aiSummary: summary, aiSummaryFromImages: fromImages }));
   } catch (err) {
     console.error('generateAndSaveAiSummary failed:', err);
   }
@@ -2893,8 +2894,7 @@ if (currentScreen === 'navigation' && selectedResource) {
                 <div className="flex items-center gap-2 mb-2 flex-wrap">
                   <Brain className="w-4 h-4 text-white shrink-0" />
                   <p className="text-sm font-semibold text-white">AI-generated summary from media</p>
-                  {(selectedEvent.aiSummary || aiEventSummary[selectedEvent.id]) &&
-                    (selectedEvent.mediaFiles || []).some(m => m.type === 'image') && (
+                  {selectedEvent.aiSummaryFromImages && (
                     <span className="text-xs bg-white bg-opacity-20 text-white px-2 py-0.5 rounded-full">
                       {(selectedEvent.mediaFiles || []).filter(m => m.type === 'image').length} image{(selectedEvent.mediaFiles || []).filter(m => m.type === 'image').length !== 1 ? 's' : ''} analyzed
                     </span>
