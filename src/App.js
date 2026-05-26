@@ -15,7 +15,7 @@ import { Home, Edit, Menu, User, ChevronRight, MapPin, Phone, Video, Camera, Ima
 import 'leaflet/dist/leaflet.css';
 
 // Firebase (inlined minimal setup)
-import { initializeApp } from "firebase/app";
+import { initializeApp, getApps, getApp } from "firebase/app";
 import { getAuth, signInAnonymously } from "firebase/auth";
 import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 
@@ -214,6 +214,22 @@ const createCustomIcon = (color) => {
     iconAnchor: [15, 15],
   });
 };
+
+// Firebase module-level initialization (must not be called inside a component)
+const _firebaseConfig = {
+  apiKey: "AIzaSyAWQIO_2SGUprCVggbunCLMXI2mgh5NDaE",
+  authDomain: "hfd1-946b8.firebaseapp.com",
+  projectId: "hfd1-946b8",
+  storageBucket: "hfd1-946b8.firebasestorage.app",
+  messagingSenderId: "4293306151",
+  appId: "1:4293306151:web:ef2705baeb1dab54856b02",
+  measurementId: "G-WTH3PB3JEX"
+};
+const _firebaseApp = getApps().length === 0 ? initializeApp(_firebaseConfig) : getApp();
+const _auth = getAuth(_firebaseApp);
+signInAnonymously(_auth).catch(err => console.error('Anonymous auth failed:', err));
+const _storage = getStorage(_firebaseApp);
+const _db = getFirestore(_firebaseApp);
 
 const App = () => {
     React.useEffect(() => {
@@ -924,25 +940,10 @@ useEffect(() => {
     }
   }, [currentScreen, selectedEvent]);
 
-  // --- Firebase init & centralized upload helper ---
-  // Replace these firebaseConfig values with your project's config in production
-  const firebaseConfig = {
-    apiKey: "AIzaSyAWQIO_2SGUprCVggbunCLMXI2mgh5NDaE",
-    authDomain: "hfd1-946b8.firebaseapp.com",
-    projectId: "hfd1-946b8",
-    storageBucket: "hfd1-946b8.firebasestorage.app",
-    messagingSenderId: "4293306151",
-    appId: "1:4293306151:web:ef2705baeb1dab54856b02",
-    measurementId: "G-WTH3PB3JEX"
-  };
-
-  const firebaseApp = initializeApp(firebaseConfig);
-  const auth = getAuth(firebaseApp);
-  // ensure anonymous auth so app can read/write according to rules
-  signInAnonymously(auth).catch(err => console.error('Anonymous auth failed:', err));
-
-  const storage = getStorage(firebaseApp);
-  const db = getFirestore(firebaseApp);
+  // Firebase instances are initialized at module level to prevent duplicate-app errors on re-render
+  const auth = _auth;
+  const storage = _storage;
+  const db = _db;
   
 
   /**
@@ -1932,22 +1933,30 @@ if (currentScreen === 'home') {
       </div>
  
       {weather && (
-        <div className="mx-4 mt-4 bg-white rounded-2xl shadow-sm px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <Thermometer className="w-8 h-8 text-blue-400" />
-            <div>
-              <p className="text-2xl font-semibold text-gray-800">{weather.temp}°C</p>
-              <p className="text-sm text-gray-500">{weather.condition}</p>
+        <div className="mx-4 mt-4 bg-white rounded-2xl shadow-sm px-6 py-4">
+          {locationPermission === 'granted' && userLocationName && (
+            <div className="flex items-center gap-1 mb-3">
+              <MapPin className="w-4 h-4 text-green-600 shrink-0" />
+              <span className="text-sm font-medium text-gray-700 truncate">{userLocationName}</span>
             </div>
-          </div>
-          <div className="text-right space-y-1">
-            <div className="flex items-center justify-end gap-2">
-              <Wind className="w-5 h-5 text-gray-400" />
-              <span className="text-sm text-gray-600">{weather.windSpeed} km/h</span>
+          )}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <Thermometer className="w-8 h-8 text-blue-400" />
+              <div>
+                <p className="text-2xl font-semibold text-gray-800">{weather.temp}°C</p>
+                <p className="text-sm text-gray-500">{weather.condition}</p>
+              </div>
             </div>
-            <div className="flex items-center justify-end gap-2">
-              <CloudRain className="w-5 h-5 text-gray-400" />
-              <span className="text-sm text-gray-600">{weather.humidity}%</span>
+            <div className="text-right space-y-1">
+              <div className="flex items-center justify-end gap-2">
+                <Wind className="w-5 h-5 text-gray-400" />
+                <span className="text-sm text-gray-600">{weather.windSpeed} km/h</span>
+              </div>
+              <div className="flex items-center justify-end gap-2">
+                <CloudRain className="w-5 h-5 text-gray-400" />
+                <span className="text-sm text-gray-600">{weather.humidity}%</span>
+              </div>
             </div>
           </div>
         </div>
