@@ -1417,12 +1417,27 @@ const deleteRequest = async (reqId) => {
   }
 };
 
-// Reads a File/Blob and returns a full base64 data URL (e.g. "data:image/jpeg;base64,...")
-const _fileToDataUrl = (fileOrBlob) => new Promise((resolve, reject) => {
-  const reader = new FileReader();
-  reader.onloadend = () => resolve(reader.result);
-  reader.onerror = reject;
-  reader.readAsDataURL(fileOrBlob);
+// Resize a File/Blob to max 1024px and return a compressed JPEG data URL.
+// Phone photos are 3-8 MB; Groq's 8192-token context can't handle that.
+const _resizeImageToDataUrl = (fileOrBlob) => new Promise((resolve, reject) => {
+  const url = URL.createObjectURL(fileOrBlob);
+  const img = new Image();
+  img.onload = () => {
+    URL.revokeObjectURL(url);
+    const MAX = 1024;
+    let w = img.width, h = img.height;
+    if (w > MAX || h > MAX) {
+      if (w >= h) { h = Math.round(h * MAX / w); w = MAX; }
+      else        { w = Math.round(w * MAX / h); h = MAX; }
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+    resolve(canvas.toDataURL('image/jpeg', 0.8));
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('image load failed')); };
+  img.src = url;
 });
 
 // Shared helper: builds AI summary from images using Groq Llama 3.2 Vision
@@ -1434,10 +1449,11 @@ const _buildAiSummary = async (event, rawFiles = []) => {
     return _textFallbackSummary(event);
   }
 
-  // rawFiles are already pre-filtered to images at the call site
-  const imageFiles = rawFiles.slice(0, 4);
+  // rawFiles already pre-filtered to images at the call site; take first 2
+  // (Groq 11B context window is 8192 tokens — don't send too many images)
+  const imageFiles = rawFiles.slice(0, 2);
   const urlImages = imageFiles.length === 0
-    ? (event.mediaFiles || []).filter(m => m.type === 'image').slice(0, 4)
+    ? (event.mediaFiles || []).filter(m => m.type === 'image').slice(0, 2)
     : [];
 
   const totalImages = imageFiles.length || urlImages.length;
@@ -1446,28 +1462,23 @@ const _buildAiSummary = async (event, rawFiles = []) => {
     return _textFallbackSummary(event);
   }
 
-  console.log(`[AI] Sending ${totalImages} image(s) to Groq Llama Vision...`);
+  console.log(`[AI] Resizing and sending ${totalImages} image(s) to Groq...`);
 
   try {
     let dataUrls = [];
     if (imageFiles.length > 0) {
-      dataUrls = await Promise.all(imageFiles.map(async (file) => {
-        const dataUrl = await _fileToDataUrl(file);
-        // Ensure MIME type is set; default to image/jpeg if browser left it empty
-        if (!file.type || !file.type.startsWith('image/')) {
-          return dataUrl.replace(/^data:[^;]*;/, 'data:image/jpeg;');
-        }
-        return dataUrl;
-      }));
+      dataUrls = await Promise.all(imageFiles.map(f => _resizeImageToDataUrl(f)));
     } else {
+      // Fallback: fetch from Firebase Storage URL and resize
       dataUrls = await Promise.all(urlImages.map(async (img) => {
         const res = await fetch(img.url);
         const blob = await res.blob();
-        return await _fileToDataUrl(blob);
+        return _resizeImageToDataUrl(blob);
       }));
     }
 
-    // Build Groq message: text prompt + one image_url block per image
+    console.log(`[AI] Image sizes: ${dataUrls.map(u => Math.round(u.length / 1024) + 'KB').join(', ')}`);
+
     const contentParts = [
       {
         type: 'text',
@@ -1486,15 +1497,15 @@ const _buildAiSummary = async (event, rawFiles = []) => {
         'Authorization': `Bearer ${GROQ_KEY}`
       },
       body: JSON.stringify({
-        model: 'meta-llama/llama-3.2-11b-vision-preview',
+        model: 'llama-3.2-11b-vision-preview',
         messages: [{ role: 'user', content: contentParts }],
-        max_tokens: 300,
+        max_tokens: 400,
         temperature: 0.2
       })
     });
 
     const data = await res.json();
-    console.log('[AI] Groq response:', JSON.stringify(data).slice(0, 600));
+    console.log('[AI] Groq response:', JSON.stringify(data).slice(0, 800));
     if (data?.error) {
       console.error('[AI] Groq API error:', data.error);
     }
