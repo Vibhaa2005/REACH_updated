@@ -88,6 +88,7 @@ const GEOAPIFY_API_KEY = process.env.REACT_APP_GEOAPIFY_API_KEY;
 console.log('Google Maps API Key:', GOOGLE_MAPS_API_KEY ? 'Loaded ✓' : 'Missing ✗');
 console.log('Weather API Key:', WEATHER_API_KEY ? 'Loaded ✓' : 'Missing ✗');
 console.log('Geoapify API Key:', GEOAPIFY_API_KEY ? 'Loaded ✓' : 'Missing ✗');
+console.log('Gemini API Key:', process.env.REACT_APP_GEMINI_API_KEY ? 'Loaded ✓' : 'Missing ✗');
 
 const fetchRoute = async (startLat, startLng, endLat, endLng) => {
   try {
@@ -1429,22 +1430,34 @@ const _fileToBase64 = (fileOrBlob) => new Promise((resolve, reject) => {
 // fallbackMediaFiles: array of {url, type} objects used for existing events
 const _buildAiSummary = async (event, rawFiles = []) => {
   const GEMINI_KEY = process.env.REACT_APP_GEMINI_API_KEY;
-  if (!GEMINI_KEY) return _textFallbackSummary(event);
+  if (!GEMINI_KEY) {
+    console.warn('[AI] REACT_APP_GEMINI_API_KEY not set — text fallback');
+    return _textFallbackSummary(event);
+  }
 
-  const imageFiles = rawFiles.filter(f => f.type && f.type.startsWith('image/')).slice(0, 5);
+  // rawFiles are already pre-filtered to images at the call site, so use all of them
+  // (File.type can be empty string on some browsers — don't filter on it here)
+  const imageFiles = rawFiles.slice(0, 5);
   const urlImages = imageFiles.length === 0
     ? (event.mediaFiles || []).filter(m => m.type === 'image').slice(0, 5)
     : [];
 
   const totalImages = imageFiles.length || urlImages.length;
-  if (totalImages === 0) return _textFallbackSummary(event);
+  if (totalImages === 0) {
+    console.log('[AI] No images found — text fallback');
+    return _textFallbackSummary(event);
+  }
+
+  console.log(`[AI] Sending ${totalImages} image(s) to Gemini...`);
 
   try {
     let imageParts = [];
     if (imageFiles.length > 0) {
       imageParts = await Promise.all(imageFiles.map(async (file) => {
         const base64 = await _fileToBase64(file);
-        return { inline_data: { mime_type: file.type, data: base64 } };
+        // Fallback to image/jpeg when browser doesn't set MIME type
+        const mimeType = (file.type && file.type.startsWith('image/')) ? file.type : 'image/jpeg';
+        return { inline_data: { mime_type: mimeType, data: base64 } };
       }));
     } else {
       imageParts = await Promise.all(urlImages.map(async (img) => {
@@ -1464,7 +1477,7 @@ const _buildAiSummary = async (event, rawFiles = []) => {
           contents: [{
             parts: [
               {
-                text: `You are an emergency response assistant. Analyze ${totalImages > 1 ? 'these ' + totalImages + ' images' : 'this image'} from a reported "${event.type || 'emergency'}" incident. Describe in 3-4 sentences: what is visually happening, the severity and scale of the situation, visible injuries or damage, and any immediate dangers or hazards present. Be specific and factual — do not be vague.`
+                text: `You are an emergency response assistant. Analyze ${totalImages > 1 ? 'these ' + totalImages + ' images' : 'this image'} from a reported "${event.type || 'emergency'}" incident. In 3-4 sentences describe: what is visually happening in the scene, the apparent severity and scale of the situation, any visible injuries, damage, or hazards. Focus only on what you can directly observe in the image(s). Be specific and factual.`
               },
               ...imageParts
             ]
@@ -1473,10 +1486,14 @@ const _buildAiSummary = async (event, rawFiles = []) => {
       }
     );
     const data = await res.json();
+    console.log('[AI] Gemini raw response:', JSON.stringify(data).slice(0, 600));
+    if (data?.error) {
+      console.error('[AI] Gemini API error:', data.error);
+    }
     const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
     if (text) return { summary: text, fromImages: true };
   } catch (err) {
-    console.warn('Gemini image analysis failed:', err);
+    console.warn('[AI] Gemini call failed:', err);
   }
 
   return _textFallbackSummary(event);
