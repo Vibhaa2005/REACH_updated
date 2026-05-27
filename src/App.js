@@ -1417,151 +1417,100 @@ const deleteRequest = async (reqId) => {
   }
 };
 
-// Resize a File/Blob to max 1024px and return a compressed JPEG data URL.
-// Phone photos are 3-8 MB; Groq's 8192-token context can't handle that.
-const _resizeImageToDataUrl = (fileOrBlob) => new Promise((resolve, reject) => {
-  const url = URL.createObjectURL(fileOrBlob);
+// Step 1: shrink a File to a small JPEG data URL so it fits Groq's token budget
+const _shrinkImage = (file) => new Promise((resolve, reject) => {
+  const objUrl = URL.createObjectURL(file);
   const img = new Image();
   img.onload = () => {
-    URL.revokeObjectURL(url);
-    const MAX = 1024;
+    URL.revokeObjectURL(objUrl);
+    const MAX = 768;
     let w = img.width, h = img.height;
     if (w > MAX || h > MAX) {
       if (w >= h) { h = Math.round(h * MAX / w); w = MAX; }
       else        { w = Math.round(w * MAX / h); h = MAX; }
     }
     const canvas = document.createElement('canvas');
-    canvas.width = w;
-    canvas.height = h;
+    canvas.width = w; canvas.height = h;
     canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-    resolve(canvas.toDataURL('image/jpeg', 0.8));
+    resolve(canvas.toDataURL('image/jpeg', 0.75));
   };
-  img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('image load failed')); };
-  img.src = url;
+  img.onerror = () => { URL.revokeObjectURL(objUrl); reject(new Error('load failed')); };
+  img.src = objUrl;
 });
 
-// Shared helper: builds AI summary from images using Groq Llama 3.2 Vision
-// rawFiles: array of File objects (from form) — preferred to avoid CORS
-const _buildAiSummary = async (event, rawFiles = []) => {
-  const GROQ_KEY = process.env.REACT_APP_GROQ_API_KEY;
-  if (!GROQ_KEY) {
-    console.warn('[AI] REACT_APP_GROQ_API_KEY not set — text fallback');
-    return _textFallbackSummary(event);
-  }
+// Step 2: send one resized image to Groq and return the description text
+const _groqDescribeImage = async (dataUrl, eventType) => {
+  const key = process.env.REACT_APP_GROQ_API_KEY;
+  console.log('[AI] key present?', !!key, '| dataUrl length:', dataUrl.length);
 
-  // rawFiles already pre-filtered to images at the call site; take first 2
-  // (Groq 11B context window is 8192 tokens — don't send too many images)
-  const imageFiles = rawFiles.slice(0, 2);
-  const urlImages = imageFiles.length === 0
-    ? (event.mediaFiles || []).filter(m => m.type === 'image').slice(0, 2)
-    : [];
+  const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${key}`
+    },
+    body: JSON.stringify({
+      model: 'llama-3.2-11b-vision-preview',
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: `This image is from a "${eventType || 'emergency'}" incident. Describe in 2-3 sentences what you see: what is happening, how severe it looks, and any visible damage, injuries, or hazards.`
+          },
+          {
+            type: 'image_url',
+            image_url: { url: dataUrl }
+          }
+        ]
+      }],
+      max_tokens: 300,
+      temperature: 0.1
+    })
+  });
 
-  const totalImages = imageFiles.length || urlImages.length;
-  if (totalImages === 0) {
-    console.log('[AI] No images — text fallback');
-    return _textFallbackSummary(event);
-  }
+  const json = await resp.json();
+  console.log('[AI] Groq raw:', JSON.stringify(json).slice(0, 600));
+  if (json.error) throw new Error(json.error.message || JSON.stringify(json.error));
+  const text = json?.choices?.[0]?.message?.content?.trim();
+  if (!text) throw new Error('empty response from Groq');
+  return text;
+};
 
-  console.log(`[AI] Resizing and sending ${totalImages} image(s) to Groq...`);
+// Step 3: orchestrate — called after event creation with the raw File objects
+const generateAndSaveAiSummary = async (eventId, eventType, imageFiles) => {
+  if (!imageFiles || imageFiles.length === 0) return;
+  const key = process.env.REACT_APP_GROQ_API_KEY;
+  if (!key) { console.warn('[AI] No GROQ key set'); return; }
 
   try {
-    let dataUrls = [];
-    if (imageFiles.length > 0) {
-      dataUrls = await Promise.all(imageFiles.map(f => _resizeImageToDataUrl(f)));
-    } else {
-      // Fallback: fetch from Firebase Storage URL and resize
-      dataUrls = await Promise.all(urlImages.map(async (img) => {
-        const res = await fetch(img.url);
-        const blob = await res.blob();
-        return _resizeImageToDataUrl(blob);
-      }));
-    }
+    console.log('[AI] Shrinking image...');
+    const dataUrl = await _shrinkImage(imageFiles[0]);
+    console.log(`[AI] Shrunken size: ${Math.round(dataUrl.length / 1024)} KB`);
 
-    console.log(`[AI] Image sizes: ${dataUrls.map(u => Math.round(u.length / 1024) + 'KB').join(', ')}`);
+    const summary = await _groqDescribeImage(dataUrl, eventType);
+    console.log('[AI] Summary:', summary);
 
-    const contentParts = [
-      {
-        type: 'text',
-        text: `You are an emergency response assistant. Analyze ${totalImages > 1 ? 'these ' + totalImages + ' images' : 'this image'} from a reported "${event.type || 'emergency'}" incident. In 3-4 sentences describe: what is visually happening in the scene, the apparent severity and scale of the situation, any visible injuries or damage, and immediate hazards. Focus only on what you can directly observe. Be specific and factual.`
-      },
-      ...dataUrls.map(url => ({
-        type: 'image_url',
-        image_url: { url }
-      }))
-    ];
-
-    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${GROQ_KEY}`
-      },
-      body: JSON.stringify({
-        model: 'llama-3.2-11b-vision-preview',
-        messages: [{ role: 'user', content: contentParts }],
-        max_tokens: 400,
-        temperature: 0.2
-      })
+    await updateDoc(doc(db, 'createdEvents', eventId), {
+      aiSummary: summary,
+      aiSummaryFromImages: true
     });
-
-    const data = await res.json();
-    console.log('[AI] Groq response:', JSON.stringify(data).slice(0, 800));
-    if (data?.error) {
-      console.error('[AI] Groq API error:', data.error);
-    }
-    const text = data?.choices?.[0]?.message?.content || '';
-    if (text) return { summary: text, fromImages: true };
+    setAiEventSummary(prev => ({ ...prev, [eventId]: summary }));
+    setCreatedEvents(prev =>
+      prev.map(ev => ev.id === eventId ? { ...ev, aiSummary: summary, aiSummaryFromImages: true } : ev)
+    );
+    if (selectedEvent?.id === eventId)
+      setSelectedEvent(prev => ({ ...prev, aiSummary: summary, aiSummaryFromImages: true }));
   } catch (err) {
-    console.warn('[AI] Groq call failed:', err);
+    console.error('[AI] generateAndSaveAiSummary error:', err.message);
   }
-
-  return _textFallbackSummary(event);
 };
 
-const _textFallbackSummary = (event) => {
-  const type = event.type || 'Unknown emergency';
-  const volunteers = event.volunteersNeeded || 0;
-  const supplies = event.suppliesNeeded || '';
-  const location = event.exactAddress || event.locationName || event.location || 'Unknown location';
-  const status = event.emergencyServiceStatus || 'Unknown';
-  return {
-    summary: `${type} reported at ${location}.${volunteers > 0 ? ` ${volunteers} volunteer${volunteers !== 1 ? 's' : ''} needed.` : ''}${supplies ? ` Required supplies: ${supplies}.` : ''} Emergency services: ${status}.`,
-    fromImages: false
-  };
-};
-
-const generateAiEventSummary = async (event) => {
-  const eventId = event?.id;
-  if (!eventId) return;
-  // If already saved to Firestore, load from there into state
+// Load summary from Firestore into state when opening an existing event
+const generateAiEventSummary = (event) => {
+  if (!event?.id) return;
   if (event.aiSummary) {
-    setAiEventSummary(prev => ({ ...prev, [eventId]: event.aiSummary }));
-    return;
-  }
-  if (aiEventSummary[eventId]) return;
-  setLoadingAiSummary(true);
-  try {
-    const { summary } = await _buildAiSummary(event);
-    setAiEventSummary(prev => ({ ...prev, [eventId]: summary }));
-  } catch (err) {
-    console.error('AI summary failed:', err);
-    setAiEventSummary(prev => ({ ...prev, [eventId]: 'Summary unavailable.' }));
-  } finally {
-    setLoadingAiSummary(false);
-  }
-};
-
-// Generates summary from all images and saves it to Firestore on the event doc
-// rawFiles: original File objects from the form (avoids CORS on Firebase Storage URLs)
-const generateAndSaveAiSummary = async (eventId, mediaFiles, eventData, rawFiles = []) => {
-  try {
-    const { summary, fromImages } = await _buildAiSummary({ ...eventData, id: eventId, mediaFiles }, rawFiles);
-    await updateDoc(doc(db, 'createdEvents', eventId), { aiSummary: summary, aiSummaryFromImages: fromImages });
-    setAiEventSummary(prev => ({ ...prev, [eventId]: summary }));
-    setCreatedEvents(prev => prev.map(ev => ev.id === eventId ? { ...ev, aiSummary: summary, aiSummaryFromImages: fromImages } : ev));
-    if (selectedEvent?.id === eventId) setSelectedEvent(prev => ({ ...prev, aiSummary: summary, aiSummaryFromImages: fromImages }));
-  } catch (err) {
-    console.error('generateAndSaveAiSummary failed:', err);
+    setAiEventSummary(prev => ({ ...prev, [event.id]: event.aiSummary }));
   }
 };
 
@@ -3758,12 +3707,11 @@ if (currentScreen === 'navigation' && selectedResource) {
               const eventWithId = { ...newEventData, id: docRef.id };
 
               // Generate AI summary from uploaded images and save to Firestore
-              // Pass raw File objects to avoid CORS when fetching Firebase Storage URLs
               const rawImageFiles = newEventForm.mediaFiles
                 .filter(m => m.type === 'image' && m.file)
                 .map(m => m.file);
               if (rawImageFiles.length > 0) {
-                generateAndSaveAiSummary(docRef.id, uploadedMedia, newEventData, rawImageFiles);
+                generateAndSaveAiSummary(docRef.id, newEventData.type, rawImageFiles);
               }
 
               // ADD THIS: Track activity locally
