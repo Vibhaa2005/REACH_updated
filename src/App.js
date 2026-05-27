@@ -1420,7 +1420,7 @@ const deleteRequest = async (reqId) => {
 // Step 1: shrink a File to a small JPEG data URL so it fits Groq's token budget
 const _shrinkImage = (file) => new Promise((resolve, reject) => {
   const objUrl = URL.createObjectURL(file);
-  const img = new Image();
+  const img = new window.Image();
   img.onload = () => {
     URL.revokeObjectURL(objUrl);
     const MAX = 768;
