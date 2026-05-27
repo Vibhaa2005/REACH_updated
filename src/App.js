@@ -65,11 +65,15 @@ async function requestMobilePermissions() {
 async function getCurrentPositionSafe() {
   if (!Capacitor.isNativePlatform()) {
     return new Promise((resolve, reject) => {
-      navigator.geolocation.getCurrentPosition(resolve, reject);
+      navigator.geolocation.getCurrentPosition(resolve, reject, {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0
+      });
     });
   } else {
-    await Geolocation.checkPermissions(); // keep permission active
-    return await Geolocation.getCurrentPosition();
+    await Geolocation.checkPermissions();
+    return await Geolocation.getCurrentPosition({ enableHighAccuracy: true });
   }
 }
 
@@ -197,16 +201,27 @@ const fetchExactAddress = async (lat, lng) => {
         return data.results[0].formatted_address;
       }
     }
-    // Fallback: free OpenStreetMap Nominatim reverse geocoding
+    // Free OpenStreetMap Nominatim reverse geocoding
     const res = await fetch(
-      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`,
+      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&addressdetails=1`,
       { headers: { 'Accept-Language': 'en' } }
     );
     const data = await res.json();
     if (data && data.address) {
       const a = data.address;
-      return [a.suburb || a.neighbourhood || a.city_district, a.city || a.town || a.village, a.state]
-        .filter(Boolean).slice(0, 2).join(', ');
+      // Broad field priority — covers urban, semi-urban, rural and Indian addresses
+      const locality =
+        a.suburb || a.neighbourhood || a.quarter || a.residential ||
+        a.hamlet || a.village || a.city_district || a.district || a.county;
+      const city =
+        a.city || a.town || a.municipality || a.city_district ||
+        a.county || a.state_district;
+      const parts = [locality, city || a.state].filter(Boolean);
+      if (parts.length > 0) return parts.slice(0, 2).join(', ');
+      // Last resort: first two meaningful parts of display_name
+      if (data.display_name) {
+        return data.display_name.split(',').slice(0, 2).join(',').trim();
+      }
     }
     return null;
   } catch (err) {
@@ -1348,7 +1363,7 @@ useEffect(() => {
         setUserLocation({ lat, lng });
         setLocationPermission("granted");
         const name = await fetchExactAddress(lat, lng);
-        if (name) setUserLocationName(name.split(',').slice(0, 2).join(',').trim());
+        if (name) setUserLocationName(name);
       })
       .catch(err => {
         console.log("Desktop location denied:", err);
@@ -1366,7 +1381,7 @@ const requestLocation = async () => {
     setLocationPermission("granted");
     setShowLocationDialog(false);
     const name = await fetchExactAddress(lat, lng);
-    if (name) setUserLocationName(name.split(',').slice(0, 2).join(',').trim());
+    if (name) setUserLocationName(name);
   } catch (err) {
     console.log("Location denied/error:", err);
     setLocationPermission("denied");
@@ -1378,31 +1393,16 @@ const requestLocation = async () => {
 const requestMobileLocation = async () => {
   try {
     setShowLocationDialog(false);
-
-    const success = (pos) => {
-      setUserLocation({
-        lat: pos.coords.latitude,
-        lng: pos.coords.longitude,
-      });
-      setLocationPermission("granted");
-    };
-
-    const error = (err) => {
-      console.log("Mobile geolocation error:", err);
-      alert("Unable to get location. Please enable location permissions.");
-      setLocationPermission("denied");
-    };
-
-    // Unified safe location function
-    try {
-      const pos = await getCurrentPositionSafe();
-      success({ coords: pos.coords });
-    } catch (err) {
-      error(err);
-    }
-  } catch (e) {
-    console.log("Mobile geolocation exception:", e);
-    alert("Error fetching your location.");
+    const pos = await getCurrentPositionSafe();
+    const lat = pos.coords.latitude;
+    const lng = pos.coords.longitude;
+    setUserLocation({ lat, lng });
+    setLocationPermission("granted");
+    const name = await fetchExactAddress(lat, lng);
+    if (name) setUserLocationName(name);
+  } catch (err) {
+    console.log("Mobile geolocation error:", err);
+    alert("Unable to get location. Please enable location permissions.");
     setLocationPermission("denied");
   }
 };
