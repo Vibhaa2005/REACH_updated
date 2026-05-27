@@ -22,8 +22,8 @@
     "libp2p": "^3.0.6",
     "lucide-react": "^0.546.0",
     "peer-id": "^0.16.0",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
     "react-leaflet": "^5.0.0",
     "react-leaflet-cluster": "^4.0.0",
     "react-scripts": "5.0.1",
@@ -52,6 +52,10 @@
       "last 1 firefox version",
       "last 1 safari version"
     ]
+  },
+  "overrides": {
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
   },
   "devDependencies": {
     "@react-native-community/cli": "^20.0.2",
