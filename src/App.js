@@ -88,7 +88,7 @@ const GEOAPIFY_API_KEY = process.env.REACT_APP_GEOAPIFY_API_KEY;
 console.log('Google Maps API Key:', GOOGLE_MAPS_API_KEY ? 'Loaded ✓' : 'Missing ✗');
 console.log('Weather API Key:', WEATHER_API_KEY ? 'Loaded ✓' : 'Missing ✗');
 console.log('Geoapify API Key:', GEOAPIFY_API_KEY ? 'Loaded ✓' : 'Missing ✗');
-console.log('Gemini API Key:', process.env.REACT_APP_GEMINI_API_KEY ? 'Loaded ✓' : 'Missing ✗');
+console.log('Groq API Key:', process.env.REACT_APP_GROQ_API_KEY ? 'Loaded ✓' : 'Missing ✗');
 
 const fetchRoute = async (startLat, startLng, endLat, endLng) => {
   try {
@@ -1417,83 +1417,91 @@ const deleteRequest = async (reqId) => {
   }
 };
 
-// Converts a File object or fetched blob to base64 string
-const _fileToBase64 = (fileOrBlob) => new Promise((resolve, reject) => {
+// Reads a File/Blob and returns a full base64 data URL (e.g. "data:image/jpeg;base64,...")
+const _fileToDataUrl = (fileOrBlob) => new Promise((resolve, reject) => {
   const reader = new FileReader();
-  reader.onloadend = () => resolve(reader.result.split(',')[1]);
+  reader.onloadend = () => resolve(reader.result);
   reader.onerror = reject;
   reader.readAsDataURL(fileOrBlob);
 });
 
-// Shared helper: builds AI summary from images
-// rawFiles: array of File objects (from form, avoids CORS) — preferred
-// fallbackMediaFiles: array of {url, type} objects used for existing events
+// Shared helper: builds AI summary from images using Groq Llama 3.2 Vision
+// rawFiles: array of File objects (from form) — preferred to avoid CORS
 const _buildAiSummary = async (event, rawFiles = []) => {
-  const GEMINI_KEY = process.env.REACT_APP_GEMINI_API_KEY;
-  if (!GEMINI_KEY) {
-    console.warn('[AI] REACT_APP_GEMINI_API_KEY not set — text fallback');
+  const GROQ_KEY = process.env.REACT_APP_GROQ_API_KEY;
+  if (!GROQ_KEY) {
+    console.warn('[AI] REACT_APP_GROQ_API_KEY not set — text fallback');
     return _textFallbackSummary(event);
   }
 
-  // rawFiles are already pre-filtered to images at the call site, so use all of them
-  // (File.type can be empty string on some browsers — don't filter on it here)
-  const imageFiles = rawFiles.slice(0, 5);
+  // rawFiles are already pre-filtered to images at the call site
+  const imageFiles = rawFiles.slice(0, 4);
   const urlImages = imageFiles.length === 0
-    ? (event.mediaFiles || []).filter(m => m.type === 'image').slice(0, 5)
+    ? (event.mediaFiles || []).filter(m => m.type === 'image').slice(0, 4)
     : [];
 
   const totalImages = imageFiles.length || urlImages.length;
   if (totalImages === 0) {
-    console.log('[AI] No images found — text fallback');
+    console.log('[AI] No images — text fallback');
     return _textFallbackSummary(event);
   }
 
-  console.log(`[AI] Sending ${totalImages} image(s) to Gemini...`);
+  console.log(`[AI] Sending ${totalImages} image(s) to Groq Llama Vision...`);
 
   try {
-    let imageParts = [];
+    let dataUrls = [];
     if (imageFiles.length > 0) {
-      imageParts = await Promise.all(imageFiles.map(async (file) => {
-        const base64 = await _fileToBase64(file);
-        // Fallback to image/jpeg when browser doesn't set MIME type
-        const mimeType = (file.type && file.type.startsWith('image/')) ? file.type : 'image/jpeg';
-        return { inline_data: { mime_type: mimeType, data: base64 } };
+      dataUrls = await Promise.all(imageFiles.map(async (file) => {
+        const dataUrl = await _fileToDataUrl(file);
+        // Ensure MIME type is set; default to image/jpeg if browser left it empty
+        if (!file.type || !file.type.startsWith('image/')) {
+          return dataUrl.replace(/^data:[^;]*;/, 'data:image/jpeg;');
+        }
+        return dataUrl;
       }));
     } else {
-      imageParts = await Promise.all(urlImages.map(async (img) => {
+      dataUrls = await Promise.all(urlImages.map(async (img) => {
         const res = await fetch(img.url);
         const blob = await res.blob();
-        const base64 = await _fileToBase64(blob);
-        return { inline_data: { mime_type: blob.type || 'image/jpeg', data: base64 } };
+        return await _fileToDataUrl(blob);
       }));
     }
 
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
+    // Build Groq message: text prompt + one image_url block per image
+    const contentParts = [
       {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{
-            parts: [
-              {
-                text: `You are an emergency response assistant. Analyze ${totalImages > 1 ? 'these ' + totalImages + ' images' : 'this image'} from a reported "${event.type || 'emergency'}" incident. In 3-4 sentences describe: what is visually happening in the scene, the apparent severity and scale of the situation, any visible injuries, damage, or hazards. Focus only on what you can directly observe in the image(s). Be specific and factual.`
-              },
-              ...imageParts
-            ]
-          }]
-        })
-      }
-    );
+        type: 'text',
+        text: `You are an emergency response assistant. Analyze ${totalImages > 1 ? 'these ' + totalImages + ' images' : 'this image'} from a reported "${event.type || 'emergency'}" incident. In 3-4 sentences describe: what is visually happening in the scene, the apparent severity and scale of the situation, any visible injuries or damage, and immediate hazards. Focus only on what you can directly observe. Be specific and factual.`
+      },
+      ...dataUrls.map(url => ({
+        type: 'image_url',
+        image_url: { url }
+      }))
+    ];
+
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${GROQ_KEY}`
+      },
+      body: JSON.stringify({
+        model: 'meta-llama/llama-3.2-11b-vision-preview',
+        messages: [{ role: 'user', content: contentParts }],
+        max_tokens: 300,
+        temperature: 0.2
+      })
+    });
+
     const data = await res.json();
-    console.log('[AI] Gemini raw response:', JSON.stringify(data).slice(0, 600));
+    console.log('[AI] Groq response:', JSON.stringify(data).slice(0, 600));
     if (data?.error) {
-      console.error('[AI] Gemini API error:', data.error);
+      console.error('[AI] Groq API error:', data.error);
     }
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const text = data?.choices?.[0]?.message?.content || '';
     if (text) return { summary: text, fromImages: true };
   } catch (err) {
-    console.warn('[AI] Gemini call failed:', err);
+    console.warn('[AI] Groq call failed:', err);
   }
 
   return _textFallbackSummary(event);
